@@ -1,0 +1,208 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-nfs
+spec:
+  storageClassName: ""
+  capacity:
+    storage: 20Gi
+  claimRef:
+    namespace: default
+    name: pvc-nfs
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    path: /
+    server: $NFS_SERVER_IP
+
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-nfs
+spec:
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: "" # Empty string must be explicitly set otherwise default StorageClass will be set
+  accessModes:
+    - ReadWriteMany
+  volumeName: pv-nfs
+
+---
+
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: tidy-service
+  namespace: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: tidy-server
+  ports:
+    - port: 80
+      targetPort: 3333
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-service
+spec:
+  selector:
+    app: tidy-python
+  ports:
+    - protocol: TCP
+      port: 1234
+      targetPort: 1234
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: r-service
+spec:
+  selector:
+    app: tidy-r
+  ports:
+    - protocol: TCP
+      port: 1234
+      targetPort: 1234
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tidy-python-deployment
+  labels:
+    app: tidy-python
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tidy-python
+  template:
+    metadata:
+      labels:
+        app: tidy-python
+    spec:
+      containers:
+       - name: tidy-python
+         image: itchange/python_machine:latest
+         securityContext:
+            privileged: true
+         ports:
+           - containerPort: 1234
+         volumeMounts:
+          - name: volume-nfs
+            mountPath: "/tidyHome/basvi/script"
+            subPath: script
+      volumes:
+       - name: volume-nfs
+         persistentVolumeClaim:
+                claimName: pvc-nfs
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tidy-r-deployment
+  labels:
+    app: tidy-r
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tidy-r
+  template:
+    metadata:
+      labels:
+        app: tidy-r
+    spec:
+      containers:
+       - name: tidy-r
+         image: itchange/r_machine:latest
+         securityContext:
+            privileged: true        
+         ports:
+           - containerPort: 1234
+         volumeMounts:
+          - name: volume-nfs
+            mountPath: "/tidyHome/basvi/script"
+            subPath: script
+      volumes:
+       - name: volume-nfs
+         persistentVolumeClaim:
+                claimName: pvc-nfs
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tidy-server-deployment
+  labels:
+    app: tidy-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tidy-server
+  template:
+    metadata:
+      labels:
+        app: tidy-server
+    spec:
+      containers:
+       - name: tidy-server
+         image: itchange/tidy_server:latest
+         securityContext:
+            privileged: false         
+         env:
+           - name: TIDY_PYTHON_IP
+             value: $(PYTHON_SERVICE_SERVICE_HOST)
+           - name: TIDY_R_IP
+             value: $(R_SERVICE_SERVICE_HOST)
+         ports:
+           - containerPort: 3333
+         volumeMounts:
+          - name: volume-conf
+            mountPath: "/app/tidy/equinox-Neon/basvi/conf"
+          - name: volume-nfs
+            mountPath: "/app/tidy/equinox-Neon/basvi/log"
+            subPath: log
+          - name: volume-nfs
+            mountPath: "/app/tidy/equinox-Neon/basvi/script"
+            subPath: script
+          - name: volume-nfs
+            mountPath: "/app/tidy/equinox-Neon/basvi/backups"
+            subPath: backups
+          - name: volume-nfs
+            mountPath: "/app/tidy/equinox-Neon/basvi/loadFromFiles"
+            subPath: loadFromFiles
+         readinessProbe:
+           httpGet:
+             path: /bcr
+             port: 3333
+           initialDelaySeconds: 60
+           periodSeconds: 60
+         livenessProbe:
+           httpGet:
+             path: /bcr
+             port: 3333
+           initialDelaySeconds: 60
+           periodSeconds: 60
+      volumes:
+       - name: volume-conf
+         configMap:
+           name: tidy-conf
+       - name: volume-nfs
+         persistentVolumeClaim:
+            claimName: pvc-nfs
+---
